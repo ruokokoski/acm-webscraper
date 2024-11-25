@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "acm-webscraper"
+version = "0.1.0"
+description = "Webscraper for ACM database"
+authors = ["Teemu Ruokokoski <teemu.ruokokoski@helsinki.fi>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+selenium = "^4.26.1"
+bs4 = "^0.0.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
