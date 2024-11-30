@@ -1,108 +1,131 @@
-import argparse
+import time
+import sys
+from urllib.parse import urlencode
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from urllib.parse import urlencode
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from bs4 import BeautifulSoup
-#import time
 
-# Command line input
-parser = argparse.ArgumentParser(description='ACM Search Scraper')
-parser.add_argument('search_words', type=str, help='The search query for ACM')
-args = parser.parse_args()
+def fetch_acm_search_results(search_variable):
+    driver = initialize_webdriver()
+    search_url = build_search_url(search_variable)
+    driver.get(search_url)
 
-search_variable = args.search_words
+    soup = load_page_and_get_soup(driver)
+    if not soup:
+        return None
 
-base_url = "https://dl.acm.org/action/doSearch?"
-query_params = {"AllField": search_variable}
-encoded_query = urlencode(query_params)
+    time.sleep(3)
+    results = get_results(soup, 10)
+    if not results:
+        driver.quit()
+        return None
 
-# Selenium WebDriver
-options = webdriver.ChromeOptions()
-options.add_argument('--headless')
-#prefs = {"profile.managed_default_content_settings.images": 2}  # Disable images
-#options.add_experimental_option("prefs", prefs)
-driver = webdriver.Chrome(options=options)
+    result_data_list = []
+    for result in results:
+        title, title_tag = get_title(result)
+        year = get_year(result)
+        doi_link = get_doi_link(title_tag)
+        authors = get_authors(result)
 
-# ACM search URL
-search_url = f"{base_url}{encoded_query}"
-driver.get(search_url)
+        result_data = {
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "doi_link": doi_link
+        }
+        result_data_list.append(result_data)
 
-# Wait results to load
-wait = WebDriverWait(driver, 20)
-try:
-    results_container = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "search-result__xsl-body")))
-except:
-    print("\nHakutuloksia ei löytynyt\n")
     driver.quit()
-    exit()
+    return result_data_list
 
-# Parse the HTML
-html = driver.page_source
-soup = BeautifulSoup(html, 'html.parser')
+def initialize_webdriver():
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    return webdriver.Chrome(options=options)
 
-# Find the first search result
-first_result = soup.find('li', class_='search__item')
-if not first_result:
-    print("\nHakutuloksia ei löytynyt\n")
-    driver.quit()
-    exit()
-#print(f"First result: {first_result}\n")
+def build_search_url(search_variable):
+    base_url = "https://dl.acm.org/action/doSearch?"
+    query_params = {"AllField": search_variable}
+    return f"{base_url}{urlencode(query_params)}"
 
-# Access first_result to ensure parsing
-_ = first_result.prettify()
+def load_page_and_get_soup(driver):
+    wait = WebDriverWait(driver, 20)
+    try:
+        # results_containeria tarvitaan myöhemmin bibtex-buttonin hakua varten
+        # pylint: disable=unused-variable
+        results_container = wait.until(
+            EC.presence_of_element_located(
+                (By.CLASS_NAME, "search-result__xsl-body")
+            )
+        )
+        html = driver.page_source
+        return BeautifulSoup(html, 'html.parser')
+    except (TimeoutException, WebDriverException):
+        driver.quit()
+        return None
 
-# Extract tile
-title_tag = first_result.find('h5', class_='issue-item__title') if first_result else None
-title = title_tag.text.strip() if title_tag else "Title ei löytynyt"
+def get_results(soup, count):
+    results = soup.find_all('li', class_='search__item')
+    if len(results) > 5:
+        results.pop(5)  # Poista 6., joka on mainos
 
-# Extract authors
-author_list = first_result.find('ul', class_='rlist--inline loa truncate-list')
-if author_list:
-    authors = ', '.join(
-        author.find('span').text.strip() for author in author_list.find_all('li') if author.find('span')
-    )
-else:
-    authors = "Authoreita ei löytynyt"
+    return results[:count]
 
-# Extract year
-year_tag = first_result.find('div', class_='bookPubDate')
-year = None
-if year_tag:
-    year = year_tag.text.strip().split()[-1]  # Oletetaan, että vuosi on aina viimeisenä
-year = year if year else "Vuotta ei löytynyt"
+def get_authors(result):
+    author_list = result.find('ul', class_='rlist--inline loa truncate-list')
+    if author_list:
+        authors = ', '.join(
+            author.find('span').text.strip()
+            for author in author_list.find_all('li')
+            if author.find('span')
+        )
+    else:
+        authors = "--"
+    return authors
 
-# Extract DOI link
-doi_link = None
-if title_tag:
-    link_tag = title_tag.find('a')
-    if link_tag and 'href' in link_tag.attrs:
-        doi_link = f"https://dl.acm.org{link_tag['href']}"
-doi_link = doi_link if doi_link else "DOI-linkkiä ei löytynyt"
-'''
+def get_title(result):
+    title_tag = result.find('h5', class_='issue-item__title')
+    title = title_tag.text.strip() if title_tag else "--"
+    return title, title_tag
 
-# Trigger the BibTeX button
-#bibtex_button = driver.find_element(By.CLASS_NAME, 'btn--icon')
-bibtex_button = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'btn--icon')))
-bibtex_button.click()
+def get_year(result):
+    year_tag = result.find('div', class_='bookPubDate')
+    year = None
+    if year_tag:
+        year = year_tag.text.strip().split()[-1]
+    year = year if year else "Vuotta ei löytynyt"
+    return year
 
-# Wait for the export modal
-time.sleep(3)
-modal_html = driver.page_source
-modal_soup = BeautifulSoup(modal_html, 'html.parser')
+def get_doi_link(title_tag):
+    doi_link = None
+    if title_tag:
+        link_tag = title_tag.find('a')
+        if link_tag and 'href' in link_tag.attrs:
+            doi_link = f"https://dl.acm.org{link_tag['href']}"
+    doi_link = doi_link if doi_link else "DOI-linkkiä ei löytynyt"
+    return doi_link
 
-# Extract BibTeX content
-bibtex_section = modal_soup.find('pre', class_='bibtex')
-bibtex_citation = bibtex_section.text.strip() if bibtex_section else "BibTeX virhe"
-'''
-print(f"\nEncoded query: \t{encoded_query}\n")
-print(f"Authors: \t{authors}")
-print(f"Year: \t\t{year}")
-print(f"Title: \t\t{title}")
-print(f"DOI: \t\t{doi_link}")
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 acm_scraper.py <search_term>")
+        sys.exit(1)
 
-#print(f"BibTeX: {bibtex_citation}")
-print()
-driver.quit()
+    search_term = sys.argv[1]
+    results = fetch_acm_search_results(search_term)
 
+    if results:
+        print("\nTop 10 results:\n")
+        for result in results:
+            print(f"Title: \t\t{result['title']}")
+            print(f"Authors: \t{result['authors']}")
+            print(f"Year: \t\t{result['year']}")
+            print(f"DOI Link: \t{result['doi_link']}")
+            print("-" * 70)
+    else:
+        print("No results found.")
+
+if __name__ == "__main__":
+    main()
